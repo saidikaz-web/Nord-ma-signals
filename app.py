@@ -69,7 +69,45 @@ with st.expander('⚙️ Justera filter',expanded=False):
         require_cross=st.checkbox('Kräv ny MA20/50-korsning',False)
         only_pass=st.checkbox('Visa endast aktier som klarar alla filter',False)
         st.caption('RSI, ADX och ATR använder 14 dagar. Relativ volym jämför dagens volym med föregående 20 dagars medelvärde.')
-selected=st.multiselect('Bevakningslista',list(TICKERS),default=list(TICKERS),help='Välj vilka svenska aktier som ska skannas.')
+# Egna aktier lagras i webbadressen så att listan kan bokmärkas och återanvändas.
+import re
+DEFAULT_CUSTOM = str(st.query_params.get('aktier', ''))
+if 'custom_tickers' not in st.session_state:
+    st.session_state.custom_tickers = [t for t in DEFAULT_CUSTOM.split(',') if re.fullmatch(r'[A-Z0-9-]{1,24}\.(?:ST|HE|CO|OL)', t)]
+
+st.subheader('Min bevakningslista')
+with st.form('add_custom_ticker', clear_on_submit=True):
+    c_add, c_btn = st.columns([3, 1], vertical_alignment='bottom')
+    with c_add:
+        custom_input = st.text_input('Lägg till aktie med börssymbol', placeholder='Exempel: SAND.ST eller VOLV-B.ST')
+    with c_btn:
+        add_pressed = st.form_submit_button('＋ Lägg till', use_container_width=True)
+if add_pressed:
+    ticker = custom_input.strip().upper().replace(' ', '')
+    if not re.fullmatch(r'[A-Z0-9-]{1,24}\.(?:ST|HE|CO|OL)', ticker):
+        st.error('Ange en nordisk Yahoo Finance-symbol, t.ex. SAND.ST, NOKIA.HE, NOVO-B.CO eller EQNR.OL.')
+    elif ticker in st.session_state.custom_tickers:
+        st.info('Aktien finns redan i din lista.')
+    else:
+        st.session_state.custom_tickers.append(ticker)
+        st.query_params['aktier'] = ','.join(st.session_state.custom_tickers)
+        st.success(f'{ticker} tillagd. Aktien kontrolleras när du skannar.')
+
+if st.session_state.custom_tickers:
+    st.caption('Egna aktier (ST Sverige · HE Finland · CO Danmark · OL Norge). Spara webbadressen som bokmärke för att behålla listan.')
+    for ticker in list(st.session_state.custom_tickers):
+        name_col, remove_col = st.columns([4, 1], vertical_alignment='center')
+        name_col.write(f'**{ticker}**')
+        if remove_col.button('Ta bort', key=f'remove_{ticker}'):
+            st.session_state.custom_tickers.remove(ticker)
+            if st.session_state.custom_tickers:
+                st.query_params['aktier'] = ','.join(st.session_state.custom_tickers)
+            elif 'aktier' in st.query_params:
+                del st.query_params['aktier']
+            st.rerun()
+
+all_tickers = {**TICKERS, **{ticker: ticker for ticker in st.session_state.custom_tickers}}
+selected=st.multiselect('Aktier att skanna',list(all_tickers),default=list(all_tickers),help='Välj förvalda och egna nordiska aktier.')
 col_run,col_info=st.columns([1,3],vertical_alignment='center')
 with col_run: run=st.button('↻  Skanna aktier',type='primary',use_container_width=True)
 with col_info:st.caption('Gratis Yahoo Finance-data via yfinance • Kan vara fördröjd eller otillgänglig • Inga påhittade signaler')
@@ -80,14 +118,14 @@ if run:
         results=[];fail=[]
         with st.spinner('Hämtar kurser och beräknar indikatorer…'):
             with ThreadPoolExecutor(max_workers=5) as pool:
-                futures={pool.submit(load,TICKERS[name]):name for name in selected}
+                futures={pool.submit(load,all_tickers[name]):name for name in selected}
                 for f in as_completed(futures):
                     name=futures[f]
                     try:
                         d=f.result();last=d.iloc[-1];cross=bool(d.CrossUp.tail(cross_days).any());down=bool(d.CrossDown.tail(cross_days).any())
                         checks={'Omsättning':last['Oms MSEK']>min_turn,'ADX':last.ADX>min_adx,'Kurs > MA200':(last.Close>last.MA200) if use_ma200 else True,'MA50 > MA200':(last.MA50>last.MA200) if use_ma50 else True,'ATR %':min_atr<=last['ATR%']<=max_atr,'RSI':min_rsi<=last.RSI<=max_rsi,'RelVol':last.RelVol>min_rvol}
                         passed=sum(bool(x) for x in checks.values());allpass=all(checks.values());signal=('🟢 NY KÖPSIGNAL' if cross and allpass else '🟡 Ny korsning' if cross else '🔴 Nedåtkorsning' if down else '🟢 Upptrend' if last.MA20>last.MA50 else '⚪ Ingen signal')
-                        results.append({'Aktie':name,'Ticker':TICKERS[name],'Datum':str(d.index[-1].date()),'Signal':signal,'Filter':f'{passed}/7','Godkänd':allpass,'Ny korsning':cross,'Kurs':round(float(last.Close),2),'MA20':round(float(last.MA20),2),'MA50':round(float(last.MA50),2),'MA200':round(float(last.MA200),2),'ADX':round(float(last.ADX),1),'RSI':round(float(last.RSI),1),'ATR %':round(float(last['ATR%']),2),'ADR %':round(float(last['ADR%']),2),'RelVol':round(float(last.RelVol),2),'Oms MSEK':round(float(last['Oms MSEK']),1),**{f'✓ {k}':bool(v) for k,v in checks.items()}})
+                        results.append({'Aktie':name,'Ticker':all_tickers[name],'Datum':str(d.index[-1].date()),'Signal':signal,'Filter':f'{passed}/7','Godkänd':allpass,'Ny korsning':cross,'Kurs':round(float(last.Close),2),'MA20':round(float(last.MA20),2),'MA50':round(float(last.MA50),2),'MA200':round(float(last.MA200),2),'ADX':round(float(last.ADX),1),'RSI':round(float(last.RSI),1),'ATR %':round(float(last['ATR%']),2),'ADR %':round(float(last['ADR%']),2),'RelVol':round(float(last.RelVol),2),'Oms MSEK':round(float(last['Oms MSEK']),1),**{f'✓ {k}':bool(v) for k,v in checks.items()}})
                     except Exception as e:fail.append(f'{name}: {e}')
         st.session_state.scan=(results,fail)
 if st.session_state.scan is None:
@@ -107,7 +145,7 @@ else:
         st.subheader('Aktiedetaljer')
         pick=st.selectbox('Visa graf för',df.Aktie.tolist())
         row=df.loc[df.Aktie==pick].iloc[0]
-        d=load(TICKERS[pick]).tail(200)
+        d=load(all_tickers[pick]).tail(200)
         fig=go.Figure()
         fig.add_trace(go.Candlestick(x=d.index,open=d.Open,high=d.High,low=d.Low,close=d.Close,name='Kurs',increasing_line_color='#6ee2b8',decreasing_line_color='#ef7185'))
         for n,color in [(20,'#6ee2b8'),(50,'#f2b85d'),(200,'#8e9dbd')]:fig.add_trace(go.Scatter(x=d.index,y=d[f'MA{n}'],mode='lines',name=f'MA{n}',line=dict(color=color,width=2)))
